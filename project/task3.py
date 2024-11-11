@@ -3,6 +3,7 @@ from typing import Iterable
 from networkx import MultiDiGraph
 import numpy as np
 import scipy.sparse as sp
+from pyformlang.finite_automaton import State
 from pyformlang.finite_automaton import Symbol
 from pyformlang.finite_automaton import NondeterministicFiniteAutomaton
 
@@ -14,26 +15,36 @@ class AdjacencyMatrixFA:
         if automaton is None:
             self.start_nodes = set()
             self.final_nodes = set()
-            self.nodes = dict()
+            self.nodes = set()
+            self.nodes_indexes = dict()
+            self.nodes_num = 0
             self.boolean_decomposition = dict()
             return
 
-        graph = automaton.to_networkx()
-        self.nodes = {state: i for (i, state) in enumerate(graph.nodes)}
-        self.start_nodes = {self.nodes[state] for state in automaton.start_states}
-        self.final_nodes = {self.nodes[state] for state in automaton.final_states}
-
-        nodes_num = len(self.nodes)
-        matrixes = {
-            s: np.zeros((nodes_num, nodes_num), dtype=bool) for s in automaton.symbols
+        self.nodes = automaton.states
+        self.nodes_indexes = {state: idx for idx, state in enumerate(self.nodes)}
+        self.start_nodes = {
+            self.nodes_indexes[state] for state in automaton.start_states
+        }
+        self.final_nodes = {
+            self.nodes_indexes[state] for state in automaton.final_states
         }
 
+        self.nodes_num = len(self.nodes)
+        matrixes = {
+            s: np.zeros((self.nodes_num, self.nodes_num), dtype=bool)
+            for s in automaton.symbols
+        }
+
+        graph = automaton.to_networkx()
         for u, v, label in graph.edges(data="label"):
             if label:
                 s = Symbol(label)
-                matrixes[s][self.nodes[u], self.nodes[v]] = True
+                matrixes[s][self.nodes_indexes[u], self.nodes_indexes[v]] = True
 
-        self.boolean_decomposition = {s: sp.csr_array(m) for (s, m) in matrixes.items()}
+        self.boolean_decomposition = {
+            s: sp.dok_matrix(m) for (s, m) in matrixes.items()
+        }
 
     def accepts(self, word: Iterable[Symbol]) -> bool:
         curr_states = self.start_nodes.copy()
@@ -44,7 +55,7 @@ class AdjacencyMatrixFA:
             curr_states = {
                 next_state
                 for (curr_state, next_state) in product(
-                    curr_states, self.nodes.values()
+                    curr_states, self.nodes_indexes.values()
                 )
                 if self.boolean_decomposition[sym][curr_state, next_state]
             }
@@ -56,10 +67,10 @@ class AdjacencyMatrixFA:
 
     def transitive_closure(self):
         if not self.boolean_decomposition:
-            return np.eye(len(self.nodes), dtype=np.bool_)
+            return np.eye(self.nodes_num, dtype=np.bool_)
         s = sum(self.boolean_decomposition.values())
         s.setdiag(True)
-        return np.linalg.matrix_power(s.toarray(), len(self.nodes))
+        return np.linalg.matrix_power(s.toarray(), self.nodes_num)
 
     def is_empty(self) -> bool:
         t = self.transitive_closure()
@@ -70,27 +81,30 @@ def intersect_automata(
     automaton1: AdjacencyMatrixFA, automaton2: AdjacencyMatrixFA
 ) -> AdjacencyMatrixFA:
     intersection = AdjacencyMatrixFA()
-    intersection.nodes = {
-        (n1, n2): automaton1.nodes[n1] * len(automaton2.nodes) + automaton2.nodes[n2]
-        for (n1, n2) in product(automaton1.nodes.keys(), automaton2.nodes.keys())
-    }
-    intersection.start_nodes = {
-        idx
-        for (n, idx) in intersection.nodes.items()
-        if automaton1.nodes[n[0]] in automaton1.start_nodes
-        and automaton2.nodes[n[1]] in automaton2.start_nodes
-    }
-    intersection.final_nodes = {
-        idx
-        for (n, idx) in intersection.nodes.items()
-        if automaton1.nodes[n[0]] in automaton1.final_nodes
-        and automaton2.nodes[n[1]] in automaton2.final_nodes
-    }
+    for n1, n2 in product(automaton1.nodes, automaton2.nodes):
+        node = State((n1, n2))
+        node_idx = (
+            automaton2.nodes_num * automaton1.nodes_indexes[n1]
+            + automaton2.nodes_indexes[n2]
+        )
+        intersection.nodes.add(node)
+        intersection.nodes_indexes[node] = node_idx
+        if (
+            automaton1.nodes_indexes[n1] in automaton1.start_nodes
+            and automaton2.nodes_indexes[n2] in automaton2.start_nodes
+        ):
+            intersection.start_nodes.add(node_idx)
+        if (
+            automaton1.nodes_indexes[n1] in automaton1.final_nodes
+            and automaton2.nodes_indexes[n2] in automaton2.final_nodes
+        ):
+            intersection.final_nodes.add(node_idx)
+    intersection.nodes_num = len(intersection.nodes)
     intersection.boolean_decomposition = {
         label: sp.kron(
             automaton1.boolean_decomposition[label],
             automaton2.boolean_decomposition[label],
-            format="csr",
+            format="dok",
         )
         for label in automaton1.boolean_decomposition.keys()
         if label in automaton2.boolean_decomposition.keys()
@@ -113,8 +127,8 @@ def tensor_based_rpq(
             for start_st in regex_dfa.start_states:
                 for final_st in regex_dfa.final_states:
                     if tc[
-                        intersect_fa.nodes[(start_n, start_st)],
-                        intersect_fa.nodes[(final_n, final_st)],
+                        intersect_fa.nodes_indexes[(start_n, start_st)],
+                        intersect_fa.nodes_indexes[(final_n, final_st)],
                     ]:
                         pairs.add((start_n, final_n))
     return pairs

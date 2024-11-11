@@ -1,7 +1,7 @@
 from functools import reduce
 from itertools import product
 from networkx import MultiDiGraph
-from scipy.sparse import csr_matrix, vstack
+from scipy.sparse import dok_matrix, vstack
 
 from project.task2 import graph_to_nfa, regex_to_dfa
 from project.task3 import AdjacencyMatrixFA
@@ -9,14 +9,14 @@ from project.task3 import AdjacencyMatrixFA
 
 def init_front(mdfa: AdjacencyMatrixFA, mnfa: AdjacencyMatrixFA):
     start_states = list(product(mdfa.start_nodes, mnfa.start_nodes))
-    m = len(mdfa.nodes.keys())
-    n = len(mnfa.nodes.keys())
+    m = mdfa.nodes_num
+    n = mnfa.nodes_num
     matices = []
     for dfa_idx, nfa_idx in start_states:
-        matrix = csr_matrix((m, n), dtype=bool)
+        matrix = dok_matrix((m, n), dtype=bool)
         matrix[dfa_idx, nfa_idx] = True
         matices.append(matrix)
-    return vstack(matices, "csr", dtype=bool)
+    return vstack(matices, "dok", dtype=bool)
 
 
 def ms_bfs_based_rpq(
@@ -28,7 +28,7 @@ def ms_bfs_based_rpq(
     mdfa = AdjacencyMatrixFA(regex_dfa)
     mnfa = AdjacencyMatrixFA(grapth_nfa)
 
-    index_to_state_nfa = {index: state for state, index in mnfa.nodes.items()}
+    index_to_state_nfa = {index: state for state, index in mnfa.nodes_indexes.items()}
     alphabet = mdfa.boolean_decomposition.keys() & mnfa.boolean_decomposition.keys()
 
     permutation_m = {
@@ -38,7 +38,7 @@ def ms_bfs_based_rpq(
     front = init_front(mdfa, mnfa)
     visited = front
 
-    m = len(mdfa.nodes.keys())
+    m = mdfa.nodes_num
     start_states = list(product(mdfa.start_nodes, mnfa.start_nodes))
     while front.count_nonzero() > 0:
         new_front = []
@@ -57,10 +57,15 @@ def ms_bfs_based_rpq(
         visited += front
 
     answer = set()
-    for final_dfa in mdfa.final_nodes:
-        for i, start in enumerate(mnfa.start_nodes):
-            fix_start = visited[m * i : m * (i + 1)]
-            for reached in fix_start.getrow(final_dfa).indices:
-                if reached in mnfa.final_nodes:
-                    answer.add((index_to_state_nfa[start], index_to_state_nfa[reached]))
+    for i, (_, nfa_start_state) in enumerate(start_states):
+        fix_start = visited[m * i : m * (i + 1)]
+        row, col = fix_start.nonzero()
+        for dfa_state, nfa_state in zip(row, col):
+            if dfa_state in mdfa.final_nodes and nfa_state in mnfa.final_nodes:
+                answer.add(
+                    (
+                        index_to_state_nfa[nfa_start_state].value,
+                        index_to_state_nfa[nfa_state].value,
+                    )
+                )
     return answer
