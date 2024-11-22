@@ -1,66 +1,87 @@
+from typing import Dict, Set, Tuple
 import networkx as nx
-from pyformlang.cfg import CFG
+from pyformlang.cfg import CFG, Epsilon, Terminal, Production, Variable
 
 
 def cfg_to_weak_normal_form(cfg: CFG) -> CFG:
-    _cfg = cfg.eliminate_unit_productions().remove_useless_symbols()
-    new_productions = set(
-        _cfg._decompose_productions(_cfg._get_productions_with_only_single_terminals())
-    )
-    return CFG(start_symbol=_cfg.start_symbol, productions=new_productions)
+    epsil_prod = cfg.get_nullable_symbols()
+    cfg = cfg.to_normal_form()
+    cfg_prod = list(cfg.productions)
+
+    for symb in epsil_prod:
+        cfg_prod.append(Production(head=symb, body=[Epsilon()], filtering=False))
+
+    return CFG(start_symbol=cfg.start_symbol, productions=cfg_prod)
 
 
 def hellings_based_cfpq(
     cfg: CFG,
     graph: nx.DiGraph,
-    start_nodes: set[int] = None,
-    final_nodes: set[int] = None,
-) -> set[tuple[int, int]]:
+    start_nodes: Set[int] | None = None,
+    final_nodes: Set[int] | None = None,
+) -> Set[Tuple[int, int]]:
+    if (start_nodes is None) or (start_nodes == set()):
+        start_nodes = set(graph.nodes())
+
+    if (final_nodes is None) or (final_nodes == set()):
+        final_nodes = set(graph.nodes())
     wcnf = cfg_to_weak_normal_form(cfg)
 
-    nullable = wcnf.get_nullable_symbols()
-    p_terms = {prod for prod in wcnf.productions if len(prod.body) == 1}
-    p_vars = {prod for prod in wcnf.productions if len(prod.body) == 2}
+    nullable: Set[Variable] = set()
+    terminal_to_vars: Dict[Terminal, Set[Variable]] = {}
+    vars_to_vars: Dict[Tuple[Variable, Variable], Set[Variable]] = {}
 
-    r = {(node, var, node) for node in graph.nodes for var in nullable} | {
-        (u, prod.head, v)
-        for (u, v, data) in graph.edges(data=True)
-        for prod in p_terms
-        if prod.body[0].value == data.get("label")
-    }
+    for prod in wcnf.productions:
+        head = prod.head
+        b = prod.body
+        if len(b) == 1:
+            if b[0] == Epsilon():
+                nullable.add(head)
+            else:
+                t = terminal_to_vars.get(b[0], set())
+                t.add(head)
+                terminal_to_vars[b[0]] = t
+        elif len(b) == 2:
+            t = vars_to_vars.get((b[0], b[1]), set())
+            t.add(head)
+            vars_to_vars[(b[0], b[1])] = t
 
-    new = r.copy()
+    unprocessed = set()
 
-    while new:
-        (n, N, m) = new.pop()
-        good = {
-            (u, prod.head, m)
-            for (u, M, v) in r
-            for prod in p_vars
-            if v == n
-            and prod.body[0].value == M
-            and prod.body[1].value == N
-            and (u, prod.head, m) not in r
-        }
-        new |= good
-        r |= good
+    nodes = graph.nodes()
+    edges = graph.edges(data=True)
 
-        good = {
-            (n, prod.head, v)
-            for (u, M, v) in r
-            for prod in p_vars
-            if m == u
-            and prod.body[0].value == N
-            and prod.body[1].value == M
-            and (n, prod.head, v) not in r
-        }
-        new |= good
-        r |= good
+    for edg in edges:
+        d: Dict = edg[2]
+        label_val = Terminal(d.get("label"))
+
+        var_set = terminal_to_vars.get(label_val, set())
+        for var in var_set:
+            unprocessed.add((edg[0], edg[1], var))
+
+    for var in nullable:
+        for node in nodes:
+            unprocessed.add((node, node, var))
+
+    res = set()
+    while unprocessed != set():
+        tr1 = unprocessed.pop()
+        if tr1 not in res:
+            res.add(tr1)
+
+            for tr2 in res:
+                if tr1[1] == tr2[0]:
+                    vars = vars_to_vars.get((tr1[2], tr2[2]), set())
+                    for v in vars:
+                        unprocessed.add((tr1[0], tr2[1], v))
+
+                if tr2[1] == tr1[0]:
+                    vars = vars_to_vars.get((tr2[2], tr1[2]), set())
+                    for v in vars:
+                        unprocessed.add((tr2[0], tr1[1], v))
 
     return {
-        (u, v)
-        for (u, var, v) in r
-        if (not start_nodes or u in start_nodes)
-        and (not final_nodes or v in final_nodes)
-        and var == wcnf.start_symbol.value
+        (tr[0], tr[1])
+        for tr in res
+        if tr[2] == wcnf.start_symbol and tr[0] in start_nodes and tr[1] in final_nodes
     }

@@ -1,6 +1,6 @@
 from typing import Set
 import networkx as nx
-from pyformlang.cfg import CFG, Variable
+from pyformlang.cfg import CFG, Variable, Epsilon
 from scipy.sparse import lil_matrix
 
 from project.task6 import cfg_to_weak_normal_form
@@ -20,7 +20,9 @@ def matrix_based_cfpq(
     wcnf = cfg_to_weak_normal_form(cfg)
 
     eps_prods = [
-        production.head.value for production in wcnf.productions if not production.body
+        production.head.value
+        for production in wcnf.productions
+        if production.body[0] == Epsilon()
     ]
     term_prods = {
         production for production in wcnf.productions if len(production.body) == 1
